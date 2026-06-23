@@ -1,0 +1,10 @@
+# Build output / artifacts
+*.exe
+*.pdb
+
+# The runtime copy of the dependency sits next to the exe; the canonical
+# copy lives under lib/ and IS committed so the project builds without an SDK.
+/Newtonsoft.Json.dll
+
+# NuGet package downloads
+*.nupkg

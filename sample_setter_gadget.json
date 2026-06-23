@@ -1,0 +1,6 @@
+{
+  "__type": "UnsafeDeserialization.SideEffectGadget, UnsafeDeserialization",
+  "payload": {
+    "Command": "calc.exe  (simulated -- nothing is actually launched)"
+  }
+}

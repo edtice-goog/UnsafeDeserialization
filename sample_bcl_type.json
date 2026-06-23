@@ -1,0 +1,4 @@
+{
+  "__type": "System.Collections.Generic.List`1[[System.String, mscorlib]], mscorlib",
+  "payload": [ "these", "are", "arbitrary", "BCL", "types" ]
+}

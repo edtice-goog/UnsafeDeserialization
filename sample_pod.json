@@ -1,0 +1,7 @@
+{
+  "__type": "UnsafeDeserialization.BenignPayload, UnsafeDeserialization",
+  "payload": {
+    "Name": "Alice",
+    "Age": 37
+  }
+}

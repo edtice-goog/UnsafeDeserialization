@@ -1,0 +1,6 @@
+{
+  "__type": "UnsafeDeserialization.ConstructorGadget, UnsafeDeserialization",
+  "payload": {
+    "Note": "constructor side effects fire even before properties are set"
+  }
+}
