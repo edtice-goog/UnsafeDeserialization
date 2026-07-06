@@ -1,0 +1,92 @@
+// Coverity security-directives file
+// (cov-analyze --directive-file newtonsoft_unsafe_deserialization.json
+//                --enable DF.NEWTONSOFT_TYPE_DESERIALIZATION)
+//
+// Models the analyzer-invisible pattern documented in README.md:
+//   string typeName = <tainted>;
+//   Type t          = Type.GetType(typeName);
+//   object o        = jtoken.ToObject(t);              // sink
+//   object o2       = JsonConvert.DeserializeObject(json, t); // equivalent sink
+//
+// The built-in TaintDataflow checkers do not flag this because the
+// dangerous type name flows through ordinary application code
+// (Type.GetType) rather than a Json.NET feature (TypeNameHandling/$type).
+// Per cov_security_directives.html, C# sinks cannot be attached to a
+// built-in checker, so we declare our own DF.* checker.
+
+{
+    "type"           : "Coverity analysis configuration",
+    "format_version" : 12,
+    "language"       : "C#",
+    "directives" : [
+
+        // -----------------------------------------------------------------
+        // 1. Declare the custom dataflow checker that will report defects.
+        //    "all_server_taints" covers HTTP, filesystem, console,
+        //    environment, command-line, and database taint kinds so the
+        //    checker fires regardless of how the type name reaches the app.
+        // -----------------------------------------------------------------
+        {
+            "dataflow_checker_name" : "DF.NEWTONSOFT_TYPE_DESERIALIZATION",
+            "taint_kinds"           : [ "all_server_taints" ],
+            "sink_message"          : "Data-controlled type {0} flows into Newtonsoft.Json deserialization sink {1}: any loadable type whose constructor or property setters have side effects will execute during deserialization.",
+            "remediation_advice"    : "Never derive the deserialization target Type from the payload. Deserialize to a fixed, compile-time type (ToObject<T>() with typeof at the call site) or resolve a discriminator against a strict allow-list of vetted POD/DTO types -- not via Type.GetType.",
+            "new_issue_type" : {
+                "type"          : "USER.NEWTONSOFT_TYPE_DESERIALIZATION",
+                "name"          : "Unsafe Newtonsoft.Json type deserialization",
+                "description"   : "Tainted input flows to Newtonsoft.Json ToObject(Type) / JsonConvert.DeserializeObject with an attacker-controllable Type, enabling arbitrary type instantiation (constructors and property setters of the attacker-named type execute during deserialization).",
+                "local_effect"  : "An attacker can cause any loadable .NET type with a usable constructor or writable members to be instantiated and populated. Side-effecting setters/constructors, resource-exhaustion types, and types that touch filesystem/network on construction become directly reachable.",
+                "cwe"           : 502,
+                "impact"        : "High",
+                "category"      : "Risky deserialization",
+                "security_kind" : true
+            }
+        },
+
+        // -----------------------------------------------------------------
+        // 2. Propagator: System.Type.GetType(String[, ...])
+        //    Tainted string in -> tainted System.Type out.  This is the
+        //    edge the built-in models are missing.  Covers all overloads
+        //    (1-arg, 2-arg, 3-arg) via "matching".
+        // -----------------------------------------------------------------
+        {
+            "method_returns_param" : {
+                "matching" : "System\\.Type::GetType\\(System\\.String.*"
+            },
+            "input" : "arg1"
+        },
+
+        // -----------------------------------------------------------------
+        // 3. Sinks: Newtonsoft.Json.Linq.JToken.ToObject(Type[, JsonSerializer])
+        //    "arg1" is the Type argument (this == JToken receiver, not counted).
+        // -----------------------------------------------------------------
+        {
+            "sink_for_checker" : "DF.NEWTONSOFT_TYPE_DESERIALIZATION",
+            "sink" : {
+                "to_callsite" : {
+                    "callsite_with_static_target" : {
+                        "matching" : "Newtonsoft\\.Json\\.Linq\\.JToken::ToObject\\(System\\.Type.*"
+                    }
+                },
+                "input" : "arg1"
+            }
+        },
+
+        // -----------------------------------------------------------------
+        // 4. Sinks: Newtonsoft.Json.JsonConvert.DeserializeObject(
+        //                 String, Type [, JsonSerializerSettings])
+        //    Static method: arg1 = json string, arg2 = Type.
+        // -----------------------------------------------------------------
+        {
+            "sink_for_checker" : "DF.NEWTONSOFT_TYPE_DESERIALIZATION",
+            "sink" : {
+                "to_callsite" : {
+                    "callsite_with_static_target" : {
+                        "matching" : "Newtonsoft\\.Json\\.JsonConvert::DeserializeObject\\(System\\.String,System\\.Type.*"
+                    }
+                },
+                "input" : "arg2"
+            }
+        }
+    ]
+}
