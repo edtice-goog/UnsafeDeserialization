@@ -1,0 +1,178 @@
+// Coverity security-directives file -- AUDIT-mode complement to
+// newtonsoft_unsafe_deserialization.json.
+//
+// The precise checker (DF.NEWTONSOFT_TYPE_DESERIALIZATION, in the other
+// file) fires only when a distrusted input reaches ToObject(Type).  This
+// file adds a broader, audit-severity checker that fires whenever the
+// Type argument is reflection-derived and NOT obviously a compile-time
+// typeof(...) constant.
+//
+// Design
+// ------
+// * The audit checker listens on `all_server_taints`.
+// * Every method that produces a reflection-derived Type is seeded to
+//   return `command_line`-tainted data (an arbitrary member of
+//   `all_server_taints`; see the "Cross-fire" note below for why we
+//   do not use a private kind).
+// * System.Type::GetTypeFromHandle is DELIBERATELY NOT SEEDED, so
+//   `typeof(T)` remains untainted -- that is how the "typeof is safe"
+//   property falls out for free.
+// * Sinks are identical to the precise checker.
+// * A commented allow-list-sanitizer directive is provided as a
+//   placeholder for customers with their own type-validation gate.
+//
+// Cross-fire between the two checkers
+// -----------------------------------
+// Custom taint kinds are not allowed by the directives schema, and
+// every non-server built-in kind is either reserved for
+// SENSITIVE_DATA_LEAK (source_code, configuration, bug, ...) or
+// language-restricted (js_client_*, mobile_*).  So we cannot give the
+// audit checker a private taint channel.  As a result:
+//
+//   * Load ONLY this file (or enable only the audit checker):
+//     the audit checker fires broadly and the precise checker is not
+//     enabled.
+//   * Load BOTH directive files AND enable BOTH checkers:
+//     the precise checker ALSO fires on reflection-Type paths,
+//     because seeds here use `command_line`, a kind the precise
+//     checker listens for.  This is a real broadening of the precise
+//     checker.  Recommended: run the two checkers in separate
+//     cov-analyze invocations, or accept the merged behavior as an
+//     audit sweep.
+//
+// Known limitations documented here so reviewers understand the gaps:
+//
+//  1. Type.GetType("Some.Literal.Name") fires in audit mode.  Security
+//     directives have no "argument is not a literal" predicate for C#,
+//     so we cannot distinguish literal vs. runtime string arguments.
+//     A literal-lookup is still worth reviewing -- it bypasses whatever
+//     allow-list the app relies on -- so we consider this signal, not
+//     noise.  If it proves too loud, split it into its own checker.
+//
+//  2. A Type value that reaches the sink only through a parameter or
+//     a field (never touching a reflection API in scope) will not be
+//     seeded.  This is acceptable under a whole-program analysis
+//     assumption: the Type must have been constructed somewhere.
+//
+// Run alongside the precise file:
+//
+//   cov-analyze --dir <idir> --all --distrust-all ^
+//     --enable DF.NEWTONSOFT_TYPE_DESERIALIZATION ^
+//     --enable DF.NEWTONSOFT_TYPE_DESERIALIZATION_AUDIT ^
+//     --directive-file newtonsoft_unsafe_deserialization.json ^
+//     --directive-file newtonsoft_unsafe_deserialization_audit.json
+
+{
+    "type"           : "Coverity analysis configuration",
+    "format_version" : 12,
+    "language"       : "C#",
+    "directives" : [
+
+        // -----------------------------------------------------------------
+        // 1. Declare the audit checker.
+        // -----------------------------------------------------------------
+        {
+            "dataflow_checker_name" : "DF.NEWTONSOFT_TYPE_DESERIALIZATION_AUDIT",
+            "taint_kinds"           : [ "all_server_taints" ],
+            "sink_message"          : "AUDIT: Newtonsoft.Json deserialization sink {1} received a Type argument {0} that is not provably a compile-time typeof(...) constant. Verify the Type is either a typeof(...) or has been validated against an allow-list of vetted POD/DTO types.",
+            "remediation_advice"    : "Audit mode flags EVERY Type argument to ToObject / DeserializeObject that is not a typeof(...) or a value the analyzer can trace back to typeof. Confirm one of: (a) the Type is derived only from typeof(...); (b) a project-specific allow-list validator (see the commented `method_argument_sanitizes_data` block in this file) has scrubbed the Type before this sink; or (c) explicitly triage as accepted.",
+            "new_issue_type" : {
+                "type"          : "USER.NEWTONSOFT_TYPE_DESERIALIZATION_AUDIT",
+                "name"          : "Newtonsoft.Json deserialization to a non-constant Type (audit)",
+                "description"   : "Audit-mode: fires whenever the Type argument to a Newtonsoft.Json deserialization sink can be reached from any reflection-derived Type source (Type.GetType, Assembly.GetType, MakeGenericType, object.GetType, base-type walks, etc.). Complements the precise DF.NEWTONSOFT_TYPE_DESERIALIZATION by not requiring taint from a distrusted input.",
+                "local_effect"  : "The Type being instantiated is not verifiably a compile-time constant. If the reflection-derived Type is influenced by data at any depth, attacker-named types may be constructed with side effects.",
+                "cwe"           : 502,
+                "impact"        : "Audit",
+                "category"      : "Risky deserialization -- audit",
+                "security_kind" : true
+            }
+        },
+
+        // -----------------------------------------------------------------
+        // 2. Seeded sources -- every method that produces a reflection-
+        //    derived Type is treated as returning command_line-tainted data.
+        //
+        //    System.Type::GetTypeFromHandle(RuntimeTypeHandle)System.Type is
+        //    DELIBERATELY NOT SEEDED.  typeof(T) compiles down to that call,
+        //    so keeping it clean is what makes typeof(...) safe.
+        // -----------------------------------------------------------------
+
+        // 2a. String-name resolution
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::GetType\\(System\\.String.*" },                  "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Reflection\\.Assembly::GetType\\(System\\.String.*" }, "taint_kind" : "command_line" },
+
+        // 2b. Runtime type of an existing object
+        { "method_returns_tainted_data" : { "matching" : "System\\.Object::GetType\\(\\).*" }, "taint_kind" : "command_line" },
+
+        // 2c. Reflective composition
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::MakeGenericType\\(.*" }, "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::MakeArrayType.*" },     "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::MakePointerType\\(.*" },"taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::MakeByRefType\\(.*" },  "taint_kind" : "command_line" },
+
+        // 2d. Reflection graph walking (property getters compile to get_XXX methods)
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::get_BaseType\\(\\).*" },              "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::get_DeclaringType\\(\\).*" },         "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::get_ReflectedType\\(\\).*" },         "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::get_UnderlyingSystemType\\(\\).*" },  "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Reflection\\.MemberInfo::get_DeclaringType\\(\\).*" }, "taint_kind" : "command_line" },
+
+        // 2e. Bulk enumeration / other lookups
+        { "method_returns_tainted_data" : { "matching" : "System\\.Reflection\\.Assembly::GetTypes\\(\\).*" },     "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Reflection\\.Assembly::get_ExportedTypes\\(\\).*" }, "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::GetNestedType\\(.*" },                     "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::GetNestedTypes\\(.*" },                    "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::GetGenericArguments\\(\\).*" },            "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::GetGenericTypeDefinition\\(\\).*" },       "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::GetInterface\\(.*" },                      "taint_kind" : "command_line" },
+        { "method_returns_tainted_data" : { "matching" : "System\\.Type::GetInterfaces\\(\\).*" },                  "taint_kind" : "command_line" },
+
+        // -----------------------------------------------------------------
+        // 3. Sinks -- identical to the precise checker.
+        // -----------------------------------------------------------------
+        {
+            "sink_for_checker" : "DF.NEWTONSOFT_TYPE_DESERIALIZATION_AUDIT",
+            "sink" : {
+                "to_callsite" : {
+                    "callsite_with_static_target" : {
+                        "matching" : "Newtonsoft\\.Json\\.Linq\\.JToken::ToObject\\(System\\.Type.*"
+                    }
+                },
+                "input" : "arg1"
+            }
+        },
+        {
+            "sink_for_checker" : "DF.NEWTONSOFT_TYPE_DESERIALIZATION_AUDIT",
+            "sink" : {
+                "to_callsite" : {
+                    "callsite_with_static_target" : {
+                        "matching" : "Newtonsoft\\.Json\\.JsonConvert::DeserializeObject\\(System\\.String,System\\.Type.*"
+                    }
+                },
+                "input" : "arg2"
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // 4. Optional: allow-list sanitizer placeholder.
+        //
+        //    Uncomment the block below and replace the "matching" regex
+        //    with the mangled name of your project's Type-allow-list
+        //    validator (a method that either returns the validated Type
+        //    or throws if the Type is not on the allow-list).  Any Type
+        //    that passes through it will be scrubbed of command_line taint
+        //    and will no longer trigger the audit checker downstream.
+        //
+        //    Example for a method like:
+        //        public static Type Validate(Type t) { ... }
+        //    on class MyApp.TypeAllowList:
+        //
+        //  , {
+        //      "method_argument_sanitizes_data" : {
+        //          "matching" : "MyApp\\.TypeAllowList::Validate\\(System\\.Type.*"
+        //      },
+        //      "input" : "arg1",
+        //      "taint_kinds" : [ "command_line" ]
+        //    }
+    ]
+}
